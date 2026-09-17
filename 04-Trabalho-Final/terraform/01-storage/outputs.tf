@@ -1,6 +1,6 @@
 output "bucket_datalake" {
   description = "Nome do bucket S3 do data lake (destino da migracao)."
-  value       = aws_s3_bucket.datalake.bucket
+  value       = terraform_data.bucket.output
 }
 
 output "instance_id" {

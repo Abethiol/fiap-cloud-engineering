@@ -11,9 +11,43 @@ locals {
 # ---------------------------------------------------------------------------
 # Data lake: onde os pedidos vao parar como arquivos JSON particionados por data
 # ---------------------------------------------------------------------------
-resource "aws_s3_bucket" "datalake" {
-  bucket        = local.bucket_name
-  force_destroy = true # permite terraform destroy mesmo com objetos dentro (so para o lab)
+# A SCP do AWS Academy nega explicitamente `s3:GetBucketObjectLockConfiguration`.
+# O recurso `aws_s3_bucket` do provider faz essa chamada ao ler o bucket de
+# volta depois de criar, entao o apply cria o bucket e reprova em seguida com
+# AccessDenied - deny em SCP nao e contornavel por permissao. Por isso o bucket
+# nasce pela CLI, que nao faz essa leitura, e o Terraform so guarda o nome.
+# O `output` deste recurso e o nome do bucket, e referencia-lo (em vez de
+# repetir `local.bucket_name`) e o que faz o Terraform criar o bucket antes de
+# quem depende dele.
+resource "terraform_data" "bucket" {
+  input = local.bucket_name
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      if ! aws s3api head-bucket --bucket ${self.input} 2>/dev/null; then
+        aws s3api create-bucket --bucket ${self.input} --region us-east-1 > /dev/null
+        aws s3api wait bucket-exists --bucket ${self.input}
+      fi
+    EOT
+  }
+
+  # Provisioner de destroy so pode referenciar `self`, e e por isso que o nome
+  # viaja no `input`. `rb --force` esvazia antes de apagar: os JSON que a
+  # Lambda grava nao sao geridos por nenhum `aws_s3_object`, entao um
+  # DeleteBucket simples falharia em bucket nao vazio. A guarda head-bucket
+  # mantem o destroy verde quando o bucket ja nao existe.
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      if aws s3api head-bucket --bucket ${self.input} 2>/dev/null; then
+        aws s3 rb "s3://${self.input}" --force > /dev/null
+      fi
+    EOT
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -43,7 +77,7 @@ resource "aws_lambda_function" "ingestao" {
 
   environment {
     variables = {
-      BUCKET_DATA_LAKE             = aws_s3_bucket.datalake.bucket
+      BUCKET_DATA_LAKE             = terraform_data.bucket.output
       POWERTOOLS_SERVICE_NAME      = "pedeja-ingestao"
       POWERTOOLS_METRICS_NAMESPACE = "PedeJa"
       POWERTOOLS_LOG_LEVEL         = "INFO"

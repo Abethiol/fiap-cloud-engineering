@@ -10,7 +10,7 @@ output "stream_name" {
 
 output "bucket_datalake" {
   description = "Bucket S3 onde os pedidos sao gravados."
-  value       = aws_s3_bucket.datalake.bucket
+  value       = terraform_data.bucket.output
 }
 
 output "dashboard_negocio_url" {
@@ -35,5 +35,5 @@ output "athena_workgroup" {
 
 output "athena_results" {
   description = "Prefixo S3 onde o Athena grava os resultados das queries."
-  value       = "s3://${aws_s3_bucket.datalake.bucket}/athena-results/"
+  value       = "s3://${terraform_data.bucket.output}/athena-results/"
 }

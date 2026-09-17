@@ -7,9 +7,43 @@ locals {
 }
 
 # Cada fase e autossuficiente: cria seu proprio data lake.
-resource "aws_s3_bucket" "datalake" {
-  bucket        = local.bucket_name
-  force_destroy = true
+# A SCP do AWS Academy nega explicitamente `s3:GetBucketObjectLockConfiguration`.
+# O recurso `aws_s3_bucket` do provider faz essa chamada ao ler o bucket de
+# volta depois de criar, entao o apply cria o bucket e reprova em seguida com
+# AccessDenied - deny em SCP nao e contornavel por permissao. Por isso o bucket
+# nasce pela CLI, que nao faz essa leitura, e o Terraform so guarda o nome.
+# O `output` deste recurso e o nome do bucket, e referencia-lo (em vez de
+# repetir `local.bucket_name`) e o que faz o Terraform criar o bucket antes de
+# quem depende dele.
+resource "terraform_data" "bucket" {
+  input = local.bucket_name
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      if ! aws s3api head-bucket --bucket ${self.input} 2>/dev/null; then
+        aws s3api create-bucket --bucket ${self.input} --region us-east-1 > /dev/null
+        aws s3api wait bucket-exists --bucket ${self.input}
+      fi
+    EOT
+  }
+
+  # Provisioner de destroy so pode referenciar `self`, e e por isso que o nome
+  # viaja no `input`. `rb --force` esvazia antes de apagar: os JSON que a
+  # Lambda grava nao sao geridos por nenhum `aws_s3_object`, entao um
+  # DeleteBucket simples falharia em bucket nao vazio. A guarda head-bucket
+  # mantem o destroy verde quando o bucket ja nao existe.
+  provisioner "local-exec" {
+    when        = destroy
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      if aws s3api head-bucket --bucket ${self.input} 2>/dev/null; then
+        aws s3 rb "s3://${self.input}" --force > /dev/null
+      fi
+    EOT
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -79,7 +113,7 @@ resource "aws_athena_workgroup" "pedeja" {
     enforce_workgroup_configuration    = true
     publish_cloudwatch_metrics_enabled = true
     result_configuration {
-      output_location = "s3://${aws_s3_bucket.datalake.bucket}/athena-results/"
+      output_location = "s3://${terraform_data.bucket.output}/athena-results/"
     }
   }
 }
@@ -91,7 +125,7 @@ resource "aws_glue_catalog_table" "pedidos" {
   parameters    = { classification = "parquet" }
 
   storage_descriptor {
-    location      = "s3://${aws_s3_bucket.datalake.bucket}/pedidos/"
+    location      = "s3://${terraform_data.bucket.output}/pedidos/"
     input_format  = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat"
     output_format = "org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat"
     ser_de_info {
@@ -140,7 +174,7 @@ resource "aws_kinesis_firehose_delivery_stream" "datalake" {
 
   extended_s3_configuration {
     role_arn            = local.lab_role_arn
-    bucket_arn          = "arn:aws:s3:::${aws_s3_bucket.datalake.bucket}"
+    bucket_arn          = "arn:aws:s3:::${terraform_data.bucket.output}"
     prefix              = "pedidos/"
     error_output_prefix = "erros/"
 

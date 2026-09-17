@@ -5,7 +5,7 @@ output "api_url" {
 
 output "bucket_datalake" {
   description = "Bucket S3 onde os pedidos sao gravados."
-  value       = aws_s3_bucket.datalake.bucket
+  value       = terraform_data.bucket.output
 }
 
 output "dashboard_url" {
